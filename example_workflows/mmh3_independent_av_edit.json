@@ -489,6 +489,14 @@
           "name": "video_mask",
           "type": "MASK",
           "link": null
+        },
+        {
+          "name": "preserve_audio",
+          "type": "BOOLEAN",
+          "link": null,
+          "widget": {
+            "name": "preserve_audio"
+          }
         }
       ],
       "outputs": [
@@ -497,7 +505,6 @@
           "type": "MMH3_MEDIA",
           "links": [
             4,
-            31,
             39
           ]
         },
@@ -520,7 +527,8 @@
       "widgets_values": [
         "all",
         "preserve",
-        "[]"
+        "[]",
+        true
       ]
     },
     {
@@ -1556,6 +1564,22 @@
           "widget": {
             "name": "delivery_policy"
           }
+        },
+        {
+          "name": "audio_fit",
+          "type": "COMBO",
+          "link": null,
+          "widget": {
+            "name": "audio_fit"
+          }
+        },
+        {
+          "name": "audio_source",
+          "type": "STRING",
+          "link": null,
+          "widget": {
+            "name": "audio_source"
+          }
         }
       ],
       "outputs": [
@@ -1566,10 +1590,19 @@
             29,
             34
           ]
+        },
+        {
+          "name": "packet",
+          "type": "MMH3_MEDIA",
+          "links": [
+            31
+          ]
         }
       ],
       "widgets_values": [
-        "original_when_preserved"
+        "original_when_preserved",
+        "cut",
+        "auto"
       ]
     }
   ],
@@ -1816,8 +1849,8 @@
     ],
     [
       31,
-      7,
-      0,
+      23,
+      1,
       20,
       0,
       "MMH3_MEDIA"

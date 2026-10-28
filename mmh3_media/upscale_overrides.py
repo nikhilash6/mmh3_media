@@ -30,10 +30,12 @@ def _looks_like_acceleration(entry, *, adapter_name=''):
     """Classify only trajectory/acceleration adapters; creative purposes always win."""
     purpose = str(entry.get('purpose') or 'unknown')
     name = str(entry.get('name') or '').replace('\\', '/')
-    if purpose == 'acceleration' or (adapter_name and name == adapter_name):
+    if purpose == 'acceleration':
         return True
     if purpose != 'unknown':
         return False
+    if adapter_name and name == adapter_name:
+        return True
     lowered = name.lower()
     return any(token in lowered for token in (
         'turbo', 'pdd', 'minimax_h3_acc', 'minimax-h3-acc', 'fasth3', 'fast_h3',

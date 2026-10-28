@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Any, Mapping, Sequence
 
 import torch
@@ -12,6 +13,9 @@ from .core import MMH3Media
 from .errors import MMH3ResourceError
 from .h3 import h3_expected_audio_t, make_nested_tensor, nested_parts, validate_h3_av_latent
 from .h3_contract import h3_latent_contract_from_resource
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -257,6 +261,8 @@ def stitch_h3_continuation_latents(packets: Sequence[MMH3Media]) -> H3LatentStit
         video, audio = nested_parts(latent["samples"])
         frames = int(fact["frames"])
         handover = int(fact["video_handover_frames"])
+        audio_ticks_padded = 0
+        audio_ticks_discarded = 0
 
         if index == 0:
             video_piece = video
@@ -282,12 +288,31 @@ def stitch_h3_continuation_latents(packets: Sequence[MMH3Media]) -> H3LatentStit
             # seam against the absolute assembled timeline so per-clip rounding never drifts.
             target_audio_end = h3_expected_audio_t(frame_end)
             needed_audio_t = target_audio_end - output_audio_t
-            if needed_audio_t < 1 or needed_audio_t > int(audio_tail.shape[-1]):
+            available_audio_t = int(audio_tail.shape[-1])
+            # Both source clips have already passed strict length validation. The
+            # difference between local and absolute rounding can only be one tick.
+            if needed_audio_t < 1 or abs(needed_audio_t - available_audio_t) > 1:
                 raise MMH3ResourceError(
                     f"Segment {index} cannot satisfy absolute H3 audio boundary: need {needed_audio_t} latent ticks, "
                     f"tail provides {audio_tail.shape[-1]}"
                 )
-            audio_piece = audio_tail[..., :needed_audio_t]
+            if needed_audio_t > available_audio_t:
+                # Extend the final latent value rather than inserting silence or
+                # shifting the seam. Never modify the source packet's tensor.
+                audio_ticks_padded = needed_audio_t - available_audio_t
+                audio_piece = torch.cat([audio_tail, audio_tail[..., -1:]], dim=-1)
+            else:
+                audio_ticks_discarded = available_audio_t - needed_audio_t
+                audio_piece = audio_tail[..., :needed_audio_t]
+            if audio_ticks_padded or audio_ticks_discarded:
+                logger.warning(
+                    "[MMH3 Latent Stitch] Segment %d (input %d): corrected audio rounding "
+                    "at absolute frame %d; needed %d ticks, tail provided %d; %s "
+                    "1 tick (%.1f ms). Video timing unchanged.",
+                    index, index + 1, frame_end, needed_audio_t, available_audio_t,
+                    "repeated final audio latent tick to add" if audio_ticks_padded else "trimmed",
+                    1000 / AUDIO_LATENT_FPS,
+                )
             output_frames = frame_end
             output_audio_t = target_audio_end
 
@@ -301,8 +326,10 @@ def stitch_h3_continuation_latents(packets: Sequence[MMH3Media]) -> H3LatentStit
             "audio_trim_t": audio_trim_t,
             "appended_video_t": int(video_piece.shape[2]),
             "appended_audio_t": int(audio_piece.shape[-1]),
-            "audio_tail_ticks_discarded_for_absolute_boundary": (
-                0 if index == 0 else int(audio.shape[-1]) - audio_trim_t - int(audio_piece.shape[-1])
+            "audio_tail_ticks_discarded_for_absolute_boundary": audio_ticks_discarded,
+            "audio_tail_ticks_padded_for_absolute_boundary": audio_ticks_padded,
+            "audio_boundary_correction": (
+                "repeat_last_tick" if audio_ticks_padded else "trim_tail" if audio_ticks_discarded else "none"
             ),
         })
 

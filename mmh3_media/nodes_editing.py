@@ -23,17 +23,24 @@ class MMH3AVEditPolicy(io.ComfyNode):
         return io.Schema(node_id="MMH3AVEditPolicy", display_name="MMH3 AV Edit Policy", category=CATEGORY,
             inputs=[MMH3.Input("packet"), io.Latent.Input("latent"),
                     io.Combo.Input("video_policy", options=["mask", "all", "preserve"], default="mask"),
-                    io.Combo.Input("audio_policy", options=["preserve", "all", "intervals", "follow_video"], default="preserve"),
-                    io.String.Input("audio_intervals_json", default="[]", multiline=True),
-                    io.Mask.Input("video_mask", optional=True)],
+                    io.Combo.Input("audio_policy", options=["preserve", "all", "intervals", "follow_video"], default="preserve", advanced=True,
+                                   tooltip="Audio regeneration when Keep source audio is off: all, selected intervals, or follow the video mask."),
+                    io.String.Input("audio_intervals_json", default="[]", multiline=True, advanced=True),
+                    io.Mask.Input("video_mask", optional=True),
+                    io.Boolean.Input("preserve_audio", display_name="Keep source audio", default=True, optional=True,
+                                     tooltip="Protect all audio during editing. Off regenerates audio using the advanced audio policy.")],
             outputs=[MMH3.Output("packet"), io.Latent.Output("latent"), io.String.Output("info_json")])
 
     @classmethod
-    def execute(cls, packet, latent, video_policy, audio_policy, audio_intervals_json, video_mask=None):
+    def execute(cls, packet, latent, video_policy, audio_policy, audio_intervals_json, video_mask=None, preserve_audio=None):
         require_joint_masks()
+        if preserve_audio is not None:
+            audio_policy = "preserve" if preserve_audio else ("all" if audio_policy == "preserve" else audio_policy)
         out, report = apply_av_edit_policy(latent, video_policy=video_policy, audio_policy=audio_policy,
             video_mask=video_mask, audio_intervals=json.loads(audio_intervals_json))
         packet = _packet(packet).set_extension_value("minimax_h3", "av_edit_policy", report)
+        if audio_policy != "preserve":
+            packet = packet.set_extension_value("minimax_h3", "audio_preservation", {"enabled": False})
         return io.NodeOutput(packet, out, json.dumps(report, ensure_ascii=False, indent=2))
 
 
@@ -145,13 +152,28 @@ class MMH3AVEditAudio(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(node_id="MMH3AVEditAudio", display_name="MMH3 AV Edit Delivery Audio", category=CATEGORY,
             inputs=[MMH3.Input("packet"), io.Audio.Input("decoded_audio"),
-                    io.Combo.Input("delivery_policy", options=["original_when_preserved", "decoded_latent"], default="original_when_preserved")],
-            outputs=[io.Audio.Output("audio")])
+                    io.Combo.Input("delivery_policy", options=["original_when_preserved", "decoded_latent"], default="original_when_preserved"),
+                    io.Combo.Input("audio_fit", options=["cut", "stretch"], default="cut", optional=True,
+                                   tooltip="cut trims excess and pads short tracks with silence; stretch fits the entire track without changing pitch."),
+                    io.String.Input("audio_source", default="auto", optional=True, advanced=True,
+                                    tooltip="auto, audio:0, video:0, or a resource ID. Multiple sources require an explicit choice.")],
+            outputs=[io.Audio.Output("audio"), MMH3.Output("packet")])
 
     @classmethod
-    def execute(cls, packet, decoded_audio, delivery_policy):
+    def execute(cls, packet, decoded_audio, delivery_policy, audio_fit=None, audio_source="auto"):
         from .av_edit import select_edit_delivery_audio
-        return io.NodeOutput(select_edit_delivery_audio(_packet(packet), decoded_audio, delivery_policy=delivery_policy))
+        value = _packet(packet)
+        policy = value.manifest.get("extensions", {}).get("minimax_h3", {}).get("av_edit_policy", {})
+        if delivery_policy == "original_when_preserved" and policy.get("audio_policy") == "preserve" and audio_fit is not None:
+            from .audio_preservation import prepare_audio_packet
+            value, _ = prepare_audio_packet(value, policy["frames"], fit=audio_fit, source=audio_source)
+            audio = value.ref(value.get_primary("audio")["id"]).materialize()
+        else:
+            audio = select_edit_delivery_audio(value, decoded_audio, delivery_policy=delivery_policy,
+                                              audio_fit=audio_fit, audio_source=audio_source)
+            if delivery_policy == "decoded_latent" or policy.get("audio_policy") != "preserve":
+                value = value.set_extension_value("minimax_h3", "audio_preservation", {"enabled": False})
+        return io.NodeOutput(audio, value)
 
 
 class MMH3BridgeMiddle(io.ComfyNode):

@@ -2,7 +2,7 @@
   "id": "a727c53e-edbc-575d-b889-566de24804ab",
   "revision": 0,
   "last_node_id": 110,
-  "last_link_id": 92,
+  "last_link_id": 95,
   "nodes": [
     {
       "id": 1,
@@ -49,7 +49,8 @@
           "name": "packet",
           "type": "MMH3_MEDIA",
           "links": [
-            1
+            1,
+            93
           ]
         }
       ],
@@ -108,7 +109,7 @@
           "name": "CLIP",
           "type": "CLIP",
           "links": [
-            3
+            94
           ]
         }
       ],
@@ -374,7 +375,7 @@
         {
           "name": "task_family",
           "type": "COMBO",
-          "link": 70,
+          "link": null,
           "widget": {
             "name": "task_family"
           },
@@ -390,6 +391,16 @@
           "type": "STRING",
           "link": 92,
           "label": "LoRAs"
+        },
+        {
+          "name": "source_packet",
+          "type": "MMH3_MEDIA",
+          "link": 93
+        },
+        {
+          "name": "source_clip",
+          "type": "CLIP",
+          "link": 94
         }
       ],
       "outputs": [
@@ -447,6 +458,13 @@
           "type": "STRING",
           "links": [
             40
+          ]
+        },
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "links": [
+            95
           ]
         }
       ],
@@ -1327,7 +1345,7 @@
         {
           "name": "clip",
           "type": "CLIP",
-          "link": 3
+          "link": 95
         },
         {
           "name": "video_vae",
@@ -1407,9 +1425,7 @@
         {
           "name": "task_family",
           "type": "COMBO",
-          "links": [
-            70
-          ]
+          "links": []
         }
       ],
       "properties": {
@@ -2257,14 +2273,6 @@
       "MMH3_MEDIA"
     ],
     [
-      3,
-      3,
-      0,
-      6,
-      3,
-      "CLIP"
-    ],
-    [
       4,
       4,
       0,
@@ -2521,14 +2529,6 @@
       "MODEL"
     ],
     [
-      70,
-      6,
-      7,
-      30,
-      1,
-      "COMBO"
-    ],
-    [
       71,
       30,
       2,
@@ -2695,6 +2695,30 @@
       30,
       3,
       "STRING"
+    ],
+    [
+      93,
+      1,
+      0,
+      30,
+      4,
+      "MMH3_MEDIA"
+    ],
+    [
+      94,
+      3,
+      0,
+      30,
+      5,
+      "CLIP"
+    ],
+    [
+      95,
+      30,
+      8,
+      6,
+      3,
+      "CLIP"
     ]
   ],
   "groups": [

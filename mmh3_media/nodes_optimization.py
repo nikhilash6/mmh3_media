@@ -4,7 +4,7 @@ import json
 from .sampling_runtime import sampler_options, scheduler_options, scheduler_sigmas
 
 
-from .node_support import CATEGORY, MMH3ResourceError, io, folder_paths
+from .node_support import CATEGORY, MMH3, MMH3ResourceError, io, folder_paths
 from .optimization_contract import (
     record_optimization, require_unoptimized_sampling_model,
     resolve_sampling_profile, validate_optimization_application,
@@ -343,6 +343,8 @@ class MMH3H3SamplingPreset(io.ComfyNode):
                 io.Combo.Input("task_family", display_name="Task family", options=["fl2va", "ref2va"], default="fl2va"),
                 io.Model.Input("model", tooltip="Unpatched H3 base. Standard/Custom pass it through; Turbo/FastH3 load their adapter. Connect MODEL to Optimizations and applied_loras_json to Pack."),
                 io.String.Input("turbo_loras_json", display_name="LoRAs", default="", optional=True, force_input=True, tooltip="Connect Load LoRAs to select your own adapter files and strengths."),
+                MMH3.Input("source_packet", optional=True, tooltip="Inherit the recorded source LoRA stack. Auto restores it; extension appends entries; custom/disabled replace/drop acceleration while keeping creative LoRAs. Sampling settings still come from the selected profile."),
+                io.Clip.Input("source_clip", optional=True, tooltip="Base CLIP for inherited text-encoder LoRAs. Use the CLIP output for conditioning."),
             ],
             outputs=[
                 io.String.Output("sampling_profile_json"),
@@ -353,6 +355,7 @@ class MMH3H3SamplingPreset(io.ComfyNode):
                 io.Combo.Output("scheduler"),
                 io.Model.Output("model"),
                 io.String.Output("applied_loras_json"),
+                io.Clip.Output("clip"),
             ],
         )
 
@@ -363,6 +366,8 @@ class MMH3H3SamplingPreset(io.ComfyNode):
         task_family: str,
         model,
         turbo_loras_json: str = "",
+        source_packet=None,
+        source_clip=None,
     ) -> io.NodeOutput:
         if model is None:
             raise MMH3ResourceError("H3 Sampling requires the unpatched base MODEL input")
@@ -398,6 +403,11 @@ class MMH3H3SamplingPreset(io.ComfyNode):
         turbo_selection = parse_turbo_loras(turbo_loras_json)
         lora_mode = turbo_lora_mode(turbo_loras_json)
         from .fasth3_v2 import FASTH3_V2_PROFILE, FASTH3_V2_SOURCE, apply_fasth3_v2_recipe
+        if source_packet is not None:
+            if preset.profile in {FASTH3_PROFILE, FASTH3_V2_PROFILE}:
+                raise MMH3ResourceError("FastH3 architecture recipes cannot inherit a source LoRA stack; use Refine Source LoRAs with an explicit acceleration policy")
+            # The source stack owns adapters; do not also load the preset adapter.
+            turbo_selection = []
         if getattr(model, "get_attachment", lambda key: None)(FASTH3_V2_SOURCE) and preset.profile != FASTH3_V2_PROFILE:
             raise MMH3ResourceError("FastH3 V2 Model requires the matching FastH3 V2 sampling preset")
         if preset.profile == FASTH3_V2_PROFILE:
@@ -406,7 +416,7 @@ class MMH3H3SamplingPreset(io.ComfyNode):
             model = apply_fasth3_v2_recipe(model, info)
         if turbo_selection is not None and preset.profile == FASTH3_PROFILE:
             raise MMH3ResourceError("FastH3 owns its architecture adapter; keep Load LoRAs in auto mode")
-        if turbo_selection is not None and lora_mode != "extension":
+        if source_packet is not None or (turbo_selection is not None and lora_mode != "extension"):
             pass  # Explicit replacement/disable skips the preset's LoRA loader.
         elif preset.profile == FASTH3_PROFILE:
             import folder_paths
@@ -432,7 +442,20 @@ class MMH3H3SamplingPreset(io.ComfyNode):
                 applied_loras.append(extra_entry)
             info["adapters"] = applied_loras
 
-        if turbo_selection is not None:
+        if source_packet is not None:
+            from .sampling_loras import apply_source_sampling_loras
+            model, source_clip, applied_loras = apply_source_sampling_loras(
+                source_packet, model, source_clip, turbo_loras_json)
+            from .upscale_overrides import _looks_like_acceleration, _source_sampling_adapter_name
+            source_adapter_name = _source_sampling_adapter_name(source_packet)
+            adapter = next((entry for entry in applied_loras if _looks_like_acceleration(
+                entry, adapter_name=source_adapter_name)), None)
+            info.update(adapter=adapter, adapters=applied_loras,
+                        recommended_lora=adapter["name"] if adapter else None,
+                        source_loras_inherited=True, runtime_validated=False)
+            if turbo_loras_json.strip():
+                info["turbo_loras_override"] = json.loads(turbo_loras_json)
+        elif turbo_selection is not None:
             from .fasth3 import apply_packaged_turbo
             for item in turbo_selection:
                 model, entry = apply_packaged_turbo(model, item["name"], strength=item["strength"],
@@ -443,13 +466,14 @@ class MMH3H3SamplingPreset(io.ComfyNode):
                         turbo_loras_override=json.loads(turbo_loras_json), runtime_validated=False)
 
         # Sampling is a trajectory contract, so carry it with MODEL into H3 Optimizations.
-        # Clone only the otherwise-unpatched base path to avoid mutating a shared loader output.
-        if not applied_loras and callable(getattr(model, "clone", None)):
+        # CLIP-only and no-op LoRA loaders can return the shared base MODEL.
+        # Attachments belong to this sampling branch even when a stack is recorded.
+        if callable(getattr(model, "clone", None)):
             model = model.clone()
         setter = getattr(model, "set_attachments", None)
         if callable(setter):
             setter("mmh3_sampling_profile", json.loads(json.dumps(info)))
-            if applied_loras:
+            if info.get("adapter"):
                 setter("mmh3_sampling_adapter", preset.profile)
         return io.NodeOutput(
             json.dumps(info, ensure_ascii=False, indent=2),
@@ -460,6 +484,7 @@ class MMH3H3SamplingPreset(io.ComfyNode):
             preset.scheduler,
             model,
             json.dumps(applied_loras, ensure_ascii=False),
+            source_clip,
         )
 
 

@@ -845,6 +845,10 @@ def build_latent_stitch_upscale_target(
         raise MMH3ResourceError("F05 stitch-upscale requires tensor video/audio latents")
     if video.ndim != 5 or audio.ndim != 4:
         raise MMH3ResourceError("F05 stitch-upscale received invalid separated H3 latent ranks")
+    source_joint = get_resource_payload(source_packet, source_resource)
+    expected_audio = nested_parts(source_joint["samples"])[1]
+    if tuple(audio.shape) != tuple(expected_audio.shape) or not torch.equal(audio, expected_audio.to(audio)):
+        raise MMH3ResourceError("F05 upscale audio latent does not belong to this source segment; do not wire audio from another part")
 
     # Validate the target joint latent before adding masks. Audio length also proves the
     # current segment duration while the upscaled video proves the target spatial geometry.
@@ -886,6 +890,11 @@ def build_latent_stitch_upscale_target(
         "task_family": task_family,
         "video_initializer": "learned_upscaled_low_res_segment",
         "audio_policy": "preserve_low_res_segment_audio_except_exact_hr_handover_prefix",
+        "source_audio_window": {
+            "absolute_start_frame": source_contract["timeline"].get("absolute_start_frame"),
+            "frames": source_frames, "latent_resource_id": source_resource_id,
+            "latent_revision": source_revision, "verified_against_source_packet": True,
+        },
         **({"upscale_refine": normalized_upscale_process} if normalized_upscale_process is not None else {}),
         **({"conditioning": normalized_conditioning} if normalized_conditioning is not None else {}),
     }

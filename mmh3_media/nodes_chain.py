@@ -259,24 +259,42 @@ class MMH3VideoStitch(io.ComfyNode):
         compatibility = inspect_stitch_packets(packets)
         if not compatibility.ready:
             raise MMH3ResourceError("F05 video stitch compatibility blocked: " + "; ".join(compatibility.reasons))
-        video_mode, audio_mode, overlap_frames = resolve_stitch_transition(
+        timeline_windows = None
+        if any(getattr(p, "manifest", {}).get("extensions", {}).get("minimax_h3", {}).get("audio_timeline") for p in packets):
+            from .audio_timeline import timeline_stitch_windows
+            timeline_windows = timeline_stitch_windows(packets)
+        if timeline_windows and transition == "Crossfade":
+            raise MMH3ResourceError("Protected audio timelines use their recorded context seam; select Cut or Auto Seamless to keep lip-sync timing")
+        video_mode, audio_mode, overlap_frames = ("cut", "cut", 0) if timeline_windows else resolve_stitch_transition(
             transition, transition_frames, [int(fact["frame_count"]) for fact in compatibility.facts])
         facts = list(compatibility.facts)
+        if timeline_windows and any(int(fact["frame_count"]) != window["end_frame"] - window["raw_start_frame"]
+                                    for fact, window in zip(facts, timeline_windows)):
+            raise MMH3ResourceError("Audio timeline video length changed after generation")
         dimensions = facts[0].get("dimensions")
         if not isinstance(dimensions, list) or len(dimensions) != 2:
             raise MMH3ResourceError("F05 streaming assembly requires manifest dimensions")
         streams = [materialize_streaming_segment(packet, fact) for packet, fact in zip(packets, facts)]
+        if timeline_windows:
+            from dataclasses import replace
+            streams = [replace(stream, frame_count=stream.frame_count - window["trim_frames"],
+                               start_frame=window["trim_frames"], waveform=stream.waveform[..., window["trim_samples"]:])
+                       for stream, window in zip(streams, timeline_windows)]
         color_mode = {"Auto": "auto", "Off": "off", "Always": "always"}[color_match]
         result = build_streaming_stitch(
             streams, dimensions=(int(dimensions[0]), int(dimensions[1])),
             video_mode=video_mode, audio_mode=audio_mode, overlap_frames=int(overlap_frames),
-            seam_strategy="auto_seamless" if transition == "Auto Seamless" else "manual",
+            seam_strategy="auto_seamless" if transition == "Auto Seamless" and not timeline_windows else "manual",
             color_match_mode=color_mode, color_match_strength=float(color_match_strength),
             color_match_decay_frames=int(color_match_decay_frames))
         video = result.video
         report = result.plan.to_dict()
         report["compatibility"] = compatibility.to_dict()
         report["assembly_mode"] = "streaming_decoded"
+        if timeline_windows:
+            report["audio_timeline_windows"] = timeline_windows
+            report["requested_transition"] = transition
+            report["timeline_policy"] = "remove_context_once_keep_absolute_pcm_clock"
         report["transition_length_mode"] = "none" if transition == "Cut" else ("auto" if transition_frames == 0 else "manual")
         report["rgb_buffer_bound_frames"] = 0 if video_mode == "cut" else 2 * int(overlap_frames)
         report["auto_seamless_note"] = (
@@ -284,6 +302,9 @@ class MMH3VideoStitch(io.ComfyNode):
             "timeline length, chooses crossfade or ownership_cut from scene/motion evidence, and records per-seam "
             "decisions in StreamingStitchedVideo save stats."
         )
+        if timeline_windows:
+            report["transition_length_mode"] = "recorded_context"
+            report["auto_seamless_note"] = "Recorded continuation context is removed once; PCM and visible frame ownership retain their absolute clock."
         report["color_match_note"] = (
             "Seam-local exposure/white-balance/contrast correction is evaluated during streaming decode. Auto "
             "mode suppresses correction for detected scene changes; actual decisions are stored in save stats."

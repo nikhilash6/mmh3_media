@@ -10,9 +10,87 @@ from .latent_upscale import build_latent_upscale_refine_sampling, _source_upscal
 from .lora_provenance import get_generation_loras
 from .upscale_overrides import parse_upscale_sigmas
 from .upscaler_adapter import UPSCALER_NODE, build_upscaler_inputs
+from .audio_timeline import timeline_stitch_windows
+from .audio_preservation import checked_audio
+from .stitch import pcm_boundary, _normalize_audio_length
 
 DEFAULT_UPSCALER = 'minimax_h3_latent_upscaler_3d_bf16.safetensors'
 UPSCALE_ASPECTS = ('Source', '16:9', '9:16', '1:1', '4:3', '3:4', '2:3', '3:2')
+
+
+def source_audio_windows(packets, keep_source_audio=True):
+    """Resolve PCM ownership before allocating HR models or sampler graphs."""
+    compatibility = inspect_h3_latent_stitch_packets(packets)
+    if not compatibility.ready:
+        raise MMH3ResourceError('Upscale audio: ' + '; '.join(compatibility.reasons))
+    if not keep_source_audio:
+        return None
+    available = [p.get_primary('audio') is not None for p in packets]
+    if not any(available):
+        return None  # Latent-only archives retain the original VAE decode path.
+    if not all(available):
+        raise MMH3ResourceError('Some upscale segments have no source PCM. Restore their audio or disable Keep source audio to decode the stitched audio latent.')
+    windows = timeline_stitch_windows(packets)
+    if windows is None:
+        windows = []
+        end = 0
+        for index, fact in enumerate(compatibility.facts):
+            trim = int(fact['video_handover_frames']) if index else 0
+            start = end - trim if index else int(fact.get('absolute_start_frame') or 0)
+            end = start + int(fact['frames'])
+            windows.append({'trim_frames': trim, 'trim_samples': pcm_boundary(start + trim) - pcm_boundary(start),
+                            'raw_start_frame': start, 'end_frame': end})
+    for packet, window in zip(packets, windows):
+        if window['end_frame'] <= window['raw_start_frame'] + window['trim_frames']:
+            raise MMH3ResourceError('Upscale audio context consumes the complete segment')
+        audio = packet.ref(packet.get_primary('audio')['id']).materialize()
+        wave, rate = checked_audio(audio)
+        if rate != 32000 or wave.shape[1] != 2:
+            raise MMH3ResourceError('Upscale source PCM must be 32 kHz stereo; normalize the source packet first')
+        expected = pcm_boundary(window['end_frame']) - pcm_boundary(window['raw_start_frame'])
+        if abs(wave.shape[-1] - expected) > math.ceil(32000 / 24):
+            raise MMH3ResourceError('Upscale source PCM duration differs from its recorded video window')
+    return windows
+
+
+def assemble_upscale_source_audio(packets, stitched_latent, assembly_report):
+    """Copy saved PCM windows once; HR audio latents never become delivery PCM."""
+    windows = source_audio_windows(packets)
+    if windows is None:
+        raise MMH3ResourceError('Source PCM disappeared after upscale preparation')
+    info = validate_h3_av_latent(stitched_latent, strict_audio_length=True)
+    start = windows[0]['raw_start_frame']
+    end = windows[-1]['end_frame']
+    if info.frames != end - start:
+        raise MMH3ResourceError('Stitched video duration differs from the source audio timeline')
+    from .pcm_storage import allocate_pcm, copy_pcm
+    output = allocate_pcm(2, pcm_boundary(end) - pcm_boundary(start))
+    cursor, pieces = 0, []
+    for index, (packet, window) in enumerate(zip(packets, windows)):
+        resource = packet.get_primary('audio')
+        audio = packet.ref(resource['id']).materialize()
+        wave, rate = checked_audio(audio)
+        if rate != 32000 or wave.shape[1] != 2:
+            raise MMH3ResourceError('Upscale source PCM must be 32 kHz stereo; normalize the source packet first')
+        raw_samples = pcm_boundary(window['end_frame']) - pcm_boundary(window['raw_start_frame'])
+        wave, adjustment, delta = _normalize_audio_length(wave, raw_samples, tolerance_samples=math.ceil(32000 / 24))
+        skip = window['trim_samples']
+        piece = wave[..., skip:]
+        copy_pcm(output, cursor, piece)
+        pieces.append({**window, 'index': index, 'source_packet_id': packet.manifest['id'],
+                       'audio_resource_id': resource['id'], 'audio_revision': resource['content']['revision'],
+                       'source_sample_start': skip, 'source_sample_end': raw_samples,
+                       'output_sample_start': cursor, 'output_sample_end': cursor + piece.shape[-1],
+                       'audio_adjustment': adjustment, 'audio_adjustment_samples': delta})
+        cursor += piece.shape[-1]
+    if cursor != output.shape[-1]:
+        raise MMH3ResourceError('Upscale PCM ownership windows contain a gap or overlap')
+    report = {**assembly_report, 'audio_delivery': {
+        'policy': 'source_pcm', 'sample_rate': 32000, 'channels': 2, 'samples': cursor,
+        'source_start_frame': start, 'source_end_frame': end,
+        'context_policy': 'remove_once_at_recorded_boundary', 'audio_vae_roundtrip': False,
+        'windows': pieces}}
+    return {'waveform': output, 'sample_rate': 32000}, report
 
 
 def resolve_stitch_upscale_geometry(packets, resolution):
@@ -88,7 +166,7 @@ def build_stitch_upscale_expansion(packets, *, width, height, denoise, models, c
                                    video_vae, audio_vae, upscaler_model=DEFAULT_UPSCALER,
                                    graph_builder_factory=None, steps_override=0, manual_sigmas='',
                                    attention='Default', fp16_accumulation='Default', force_unload=True,
-                                   upscaler_api='plus_v1', decode_mode='vae', trt_decoder='auto', sage_attention='disabled', sage_allow_compile=False, turbo_loras_json='', streaming='auto'):
+                                   upscaler_api='plus_v1', decode_mode='vae', trt_decoder='auto', sage_attention='disabled', sage_allow_compile=False, turbo_loras_json='', streaming='auto', keep_source_audio=True):
     if not 0 <= steps_override <= 100:
         raise MMH3ResourceError('Upscale steps must be within 0–100 (0 inherits source)')
     explicit_sigmas = parse_upscale_sigmas(manual_sigmas)
@@ -107,6 +185,8 @@ def build_stitch_upscale_expansion(packets, *, width, height, denoise, models, c
                            'sage_allow_compile': sage_allow_compile}
     optimization_inputs.update({'attention.' + key: value for key, value in selected_attention.items()})
     recipes, summary = validate_sources(packets, width, height, denoise)
+    pcm_windows = source_audio_windows(packets, keep_source_audio)
+    summary += ' · source PCM audio' if pcm_windows is not None else ' · decoded source audio latent'
     if explicit_sigmas:
         summary += f' · manual sigmas: {len(explicit_sigmas) - 1} steps'
     elif steps_override:
@@ -131,7 +211,14 @@ def build_stitch_upscale_expansion(packets, *, width, height, denoise, models, c
         elif steps_override:
             recipe.info['refine']['policy'] = 'override_steps_source_scheduler_tail'
         recipe.info['overrides'] = dict(steps=steps_override, manual_sigmas=explicit_sigmas)
-        prepare = graph.node('MMH3H3LatentUpscalePrepare', packet=packet, geometry_mode='target_dimensions',
+        # HR packets have new latent revisions. The original low-resolution
+        # packets remain authoritative for final PCM ownership and chronology.
+        high_source = packet
+        source_context = packet.manifest.get('extensions', {}).get('minimax_h3', {})
+        if source_context.get('audio_timeline') or source_context.get('audio_preservation', {}).get('enabled'):
+            high_source = packet.set_extension_value('minimax_h3', 'audio_timeline', None)
+            high_source = high_source.set_extension_value('minimax_h3', 'audio_preservation', {'enabled': False})
+        prepare = graph.node('MMH3H3LatentUpscalePrepare', packet=high_source, geometry_mode='target_dimensions',
                              scale=1.0, target_width=width, target_height=height, target_megapixels=0.0,
                              align=32, enable_chunking=True)
         upscale = graph.node(UPSCALER_NODE, **build_upscaler_inputs(
@@ -175,11 +262,17 @@ def build_stitch_upscale_expansion(packets, *, width, height, denoise, models, c
                             applied_loras_json=loras.out(5), optimization_profile_json=optimized.out(1))
         high.append(packed.out(0))
     stitch = graph.node('MMH3H3LatentStitch', **{f'segments.segment_{i}': value for i, value in enumerate(high, 1)})
-    audio = graph.node('VAEDecodeAudio', samples=stitch.out(1), vae=audio_vae)
+    if pcm_windows is not None:
+        audio = graph.node('MMH3H3StitchUpscaleAudio', samples=stitch.out(1), assembly_report_json=stitch.out(3),
+                           **{f'segments.segment_{i}': packet for i, packet in enumerate(packets, 1)})
+        final_report = audio.out(1)
+    else:
+        audio = graph.node('VAEDecodeAudio', samples=stitch.out(1), vae=audio_vae)
+        final_report = stitch.out(3)
     movie = graph.node('MMH3H3DecodeVideo', samples=stitch.out(1), vae=video_vae,
                        decode_mode=decode_mode, trt_decoder=trt_decoder, streaming=streaming, audio=audio.out(0))
     packed = graph.node('MMH3PackH3Result', packet=stitch.out(0), latent=stitch.out(1), video=movie.out(0),
                         audio=audio.out(0), operation='latent_stitch_decode', mode='h3_continuation',
-                        status=stitch.out(2), process_info_json=stitch.out(3), latent_origin='derived',
+                        status=stitch.out(2), process_info_json=final_report, latent_origin='derived',
                         optimization_profile_json=optimized.out(1))
-    return (packed.out(0), movie.out(0), stitch.out(1), stitch.out(3)), graph.finalize(), summary
+    return (packed.out(0), movie.out(0), stitch.out(1), final_report), graph.finalize(), summary

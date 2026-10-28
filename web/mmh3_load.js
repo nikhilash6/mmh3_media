@@ -71,6 +71,7 @@ app.registerExtension({
             image.src = url;
             image.alt = item.summary;
             current.append(close, element("strong", "", item.name), image, element("p", "", item.summary));
+            current.append(element("p", "", item.prompt_tag || item.prompt_status || "No prompt tag"));
             if (item.preview_source === "paired_decoded_result")
                 current.append(element("p", "", "Preview of the paired decoded result — not a new latent decode."));
             current.addEventListener("close", () => {
@@ -130,8 +131,9 @@ app.registerExtension({
                     for (const item of items.slice(shown, shown + 4)) {
                         const tile = element("button", "mmh3-gallery-tile");
                         tile.type = "button";
-                        tile.title = item.summary;
-                        tile.setAttribute("aria-label", item.kind + ": " + item.name);
+                        const promptLabel = item.prompt_tag || item.prompt_status || "No prompt tag";
+                        tile.title = promptLabel + " · " + item.summary;
+                        tile.setAttribute("aria-label", promptLabel + " · " + item.kind + ": " + item.name);
                         if (item.representation_id || item.can_preview_source) {
                             const url = api.apiURL("/mmh3_media/file_preview?file=" + encodeURIComponent(file)
                                 + (item.representation_id ? "&representation_id=" + encodeURIComponent(item.representation_id)
@@ -154,6 +156,7 @@ app.registerExtension({
                         }
                         const label = item.primary ? "Result · " + item.kind : item.name + " · " + (item.role || item.kind);
                         tile.append(element("span", "mmh3-gallery-label", label));
+                        tile.append(element("strong", "mmh3-gallery-label", promptLabel));
                         grid.append(tile);
                     }
                     shown = Math.min(shown + 4, items.length);

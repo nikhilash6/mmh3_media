@@ -1,6 +1,6 @@
 {
   "id": "6f70dbf9-6e6a-5f70-b19f-8e6b53430bf4",
-  "revision": 0,
+  "revision": 1,
   "last_node_id": 501,
   "last_link_id": 11,
   "nodes": [
@@ -381,7 +381,7 @@
       ],
       "size": [
         480,
-        768
+        800
       ],
       "flags": {},
       "order": 7,
@@ -554,6 +554,15 @@
           "widget": {
             "name": "streaming"
           }
+        },
+        {
+          "name": "keep_source_audio",
+          "type": "BOOLEAN",
+          "link": null,
+          "widget": {
+            "name": "keep_source_audio"
+          },
+          "label": "Keep source audio"
         }
       ],
       "outputs": [
@@ -599,7 +608,8 @@
         "vae",
         "auto",
         true,
-        "auto"
+        "auto",
+        true
       ]
     },
     {
@@ -753,7 +763,7 @@
       ],
       "size": [
         480,
-        570
+        780
       ],
       "flags": {},
       "order": 10,
@@ -764,7 +774,7 @@
         "Node name for S&R": "MarkdownNote"
       },
       "widgets_values": [
-        "# Upscale + Stitch · 3 or more parts\n\n1. Select the original low-res MMH3 parts in chronological order. Each next part must continue the previous one.\n2. Choose resolution: Scale (default 2×) reads MMH3 dimensions; Megapixels sets area and Source/16:9/9:16/1:1/4:3/3:4/2:3/3:2 proportions; Dimensions sets exact width/height. Source proportions are preserved unless you choose another ratio (stretch, not crop). 1 MP = 1024² pixels; sizes align to 32. No downscaling; maximum 4× per axis and 4096 pixels. Source LoRAs and sampling settings are restored automatically.\n3. For part 4+, duplicate a Load node and connect it to the next segments input. Inputs grow automatically (up to 66). Disconnect unused Load nodes.\n4. For Ref2VA parts, connect an unpatched Ref2VA model to ref2va_model. Mixed chains require both base models.\n\nOnly the assembled video is decoded. Audio and protected HR seams are retained. Independent clips, missing parents and unknown LoRA provenance are rejected before expansion.\n\nRequires the current Minimax H3 Latent Upscaler 3D. More parts still require memory for their latents and the final decoded video.\n\nOptional upscale overrides: steps_override (0 = inherit), manual_sigmas (descending list ending in 0; overrides steps/denoise), Load LoRAs replaces or extends source acceleration adapters with selected strengths; creative LoRAs keep recorded order/strengths. Match Turbo to the model family; sampler and AV shifts stay from source. Overrides are recorded in the result."
+        "# Upscale + Stitch · 3 or more parts\n\n1. Select the original low-res MMH3 parts in chronological order. Each next part must continue the previous one.\n2. Choose resolution: Scale (default 2×) reads MMH3 dimensions; Megapixels sets area and Source/16:9/9:16/1:1/4:3/3:4/2:3/3:2 proportions; Dimensions sets exact width/height. Source proportions are preserved unless you choose another ratio (stretch, not crop). 1 MP = 1024² pixels; sizes align to 32. No downscaling; maximum 4× per axis and 4096 pixels. Source LoRAs and sampling settings are restored automatically.\n3. For part 4+, duplicate a Load node and connect it to the next segments input. Inputs grow automatically (up to 66). Disconnect unused Load nodes.\n4. For Ref2VA parts, connect an unpatched Ref2VA model to ref2va_model. Mixed chains require both base models.\n\nOnly the assembled video is decoded. Audio and protected HR seams are retained. Independent clips, missing parents and unknown LoRA provenance are rejected before expansion.\n\nRequires the current Minimax H3 Latent Upscaler 3D. More parts still require memory for their latents and the final decoded video.\n\nOptional upscale overrides: steps_override (0 = inherit), manual_sigmas (descending list ending in 0; overrides steps/denoise), Load LoRAs replaces or extends source acceleration adapters with selected strengths; creative LoRAs keep recorded order/strengths. Match Turbo to the model family; sampler and AV shifts stay from source. Overrides are recorded in the result.\n\nAUDIO TIMELINE: Keep source audio is on by default. Each HR refinement uses and freezes the audio latent from that same low-res packet. Final delivery joins the original PCM windows from the input MMH3 files, removing each continuation context once. F01/F02 track changes and absolute frame/sample positions are validated. No per-part stretch, generated-audio mix or final Audio VAE roundtrip is used when source PCM is available. Missing PCM in only some parts is rejected; fully latent-only chains retain VAE audio decoding. High denoise can still change mouth motion even when the audio clock is preserved."
       ]
     },
     {

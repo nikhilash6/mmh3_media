@@ -169,7 +169,11 @@ def _auto_mask_cleanup(mask: torch.Tensor) -> torch.Tensor:
     if radius <= 0:
         return mask
     x = mask.unsqueeze(1)
-    x = F.max_pool2d(x, kernel_size=radius * 2 + 1, stride=1, padding=radius)
+    # A square maximum is separable. Two linear passes preserve the exact
+    # dilation and border padding without scanning a k*k window per pixel.
+    kernel = radius * 2 + 1
+    x = F.max_pool2d(x, kernel_size=(1, kernel), stride=1, padding=(0, radius))
+    x = F.max_pool2d(x, kernel_size=(kernel, 1), stride=1, padding=(radius, 0))
     return x[:, 0].clamp(0.0, 1.0)
 
 

@@ -16,13 +16,14 @@ from .nodes_control import MMH3ControlConfigure, MMH3InpaintPrepare, MMH3Control
 from .nodes_optimization import MMH3FastH3V2Model, MMH3H3TurboLoRAs, MMH3H3SageAttentionPatch, MMH3H3OptimizationRecord, MMH3H3FP16AccumulationPatch, MMH3H3ModelOptimizations, MMH3H3SamplingPreset, MMH3H3Scheduler, MMH3H3SLAApply, MMH3H3VDNApply
 from .nodes_settings import MMH3H3GenerationSettings, MMH3H3ReferenceImageSettings
 from .nodes_segments import MMH3H3SegmentPrepare, MMH3SegmentReview
-from .nodes_stitch_upscale import MMH3H3StitchUpscale, MMH3H3UpscaleAVRestore
+from .nodes_stitch_upscale import MMH3H3StitchUpscale, MMH3H3UpscaleAVRestore, MMH3H3StitchUpscaleAudio
 from .nodes_delivery import MMH3VideoUpscale, MMH3SaveVideo, MMH3H3VideoDecode, MMH3CreateVideo, MMH3H3DecodeVideo
 from .nodes_automation import MMH3AutomationAssembleChunks, MMH3AutomationAssemblyGate, MMH3AutomationAudioChunk, MMH3AutomationCheckpoint, MMH3AutomationLedger, MMH3AutomationReport, MMH3AutomationVideoChunk, MMH3BatchInputPlan, MMH3BatchNormalizeImport, MMH3BatchPreQueueEstimate, MMH3BatchStitch, MMH3H3AudioSyncProof, MMH3InteractiveAudioTimelinePlan, MMH3LongAudioTimelinePlan, MMH3LongVideoAudioSyncSettings, MMH3LongVideoChunkPlan, MMH3LongVideoUpscaleSettings, MMH3TrimAudioSamples, MMH3TrimAudioSamplesPadded
 from .upstream_backports.minimax_h3_forward_patch import BackportCompatibilityError
 from .nodes_h3 import MMH3H3AudioVAE
 from .nodes_long_video_ui import MMH3LongVideoStudio, MMH3LongVideoStudioStep, MMH3LongVideoStudioComplete
-from .nodes_workflow import MMH3H3TaskModel, MMH3Generate, MMH3KeyframePrepare, MMH3PacketKeyframes, MMH3ReferenceCards, MMH3H3Refine, MMH3RefineMaskRestore
+from .nodes_workflow import MMH3H3TaskModel, MMH3Generate, MMH3PreserveAudioTarget, MMH3KeyframePrepare, MMH3PacketKeyframes, MMH3ReferenceCards, MMH3H3Refine, MMH3RefineMaskRestore
+from .nodes_audio_preservation import MMH3H3AudioPreservationPrepare, MMH3H3AudioPreservationFinish, MMH3H3AudioContinuationPrepare
 from .upstream_backports.minimax_h3_fun_pr15860 import ensure_minimax_h3_fun_backport
 
 
@@ -33,7 +34,9 @@ class MMH3Extension(ComfyExtension):
     @override
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
         node_list = [
-            MMH3H3TaskModel, MMH3Generate, MMH3KeyframePrepare, MMH3PacketKeyframes, MMH3ReferenceCards, MMH3H3Refine, MMH3RefineMaskRestore,
+            MMH3H3TaskModel, MMH3Generate, MMH3PreserveAudioTarget, MMH3KeyframePrepare, MMH3PacketKeyframes, MMH3ReferenceCards, MMH3H3Refine, MMH3RefineMaskRestore,
+            MMH3H3AudioPreservationPrepare, MMH3H3AudioPreservationFinish,
+            MMH3H3AudioContinuationPrepare,
             MMH3LongVideoStudio, MMH3LongVideoStudioStep, MMH3LongVideoStudioComplete,
             MMH3H3AudioVAE,
             MMH3AVEditPolicy,
@@ -110,6 +113,7 @@ class MMH3Extension(ComfyExtension):
             MMH3VideoStitch,
             MMH3H3LatentStitch,
             MMH3H3StitchUpscale,
+            MMH3H3StitchUpscaleAudio,
             MMH3H3UpscaleAVRestore,
             MMH3Unpack,
             MMH3Export,

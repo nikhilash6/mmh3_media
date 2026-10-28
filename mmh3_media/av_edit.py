@@ -107,7 +107,7 @@ def restore_av_protection(source, sampled):
             "samples": make_nested_tensor(result)}
 
 
-def select_edit_delivery_audio(packet, decoded_audio, *, delivery_policy="original_when_preserved"):
+def select_edit_delivery_audio(packet, decoded_audio, *, delivery_policy="original_when_preserved", audio_fit=None, audio_source="auto"):
     if delivery_policy not in {"original_when_preserved", "decoded_latent"}:
         raise MMH3ResourceError("Invalid audio delivery policy")
     policy = packet.manifest.get("extensions", {}).get("minimax_h3", {}).get("av_edit_policy")
@@ -115,6 +115,9 @@ def select_edit_delivery_audio(packet, decoded_audio, *, delivery_policy="origin
         raise MMH3ResourceError("Packet has no AV edit policy")
     if delivery_policy == "decoded_latent" or policy["audio_policy"] != "preserve":
         return decoded_audio
+    if audio_fit is not None:
+        from .audio_preservation import prepare_preserved_audio
+        return prepare_preserved_audio(packet, policy["frames"], fit=audio_fit, source=audio_source)[0]
     if packet.get_primary("audio") is None and packet.get_primary("video") is None:
         raise MMH3ResourceError("No original PCM: connect source audio or explicitly choose decoded_latent delivery")
     # Reuse the source-PCM contract, including the native 40 Hz audio boundary.

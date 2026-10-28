@@ -65,7 +65,7 @@ class MMH3H3LearnedUpscale(io.ComfyNode):
             display_name="MMH3 H3 Learned Upscale",
             category=CATEGORY,
             description=(
-                "MMH3 adapter for the maintained Plus MinimaxH3LatentUpscaler3D API. "
+                "MMH3 adapter for Plus and original LBH MinimaxH3LatentUpscaler3D APIs. "
                 "Upscales video only to the exact prepared dimensions."
             ),
             inputs=[

@@ -103,7 +103,12 @@ def prepare_assembly_packet(packets):
                         "process_control": deep_copy_json(proof)})
     # A source's control stream has source-local geometry/time. It is historical
     # provenance, not an instruction to reapply control to the stitched timeline.
-    return packets[-1].set_extension_value("mmh3_media", "control", None), sources
+    base = packets[-1].set_extension_value("mmh3_media", "control", None)
+    if base.manifest.get("extensions", {}).get("minimax_h3", {}).get("audio_timeline"):
+        # A segment's cursor cannot describe a newly assembled latent/video.
+        base = base.set_extension_value("minimax_h3", "audio_timeline", None)
+        base = base.set_extension_value("minimax_h3", "audio_preservation", {"enabled": False})
+    return base, sources
 
 
 def pack_h3_result(
@@ -129,7 +134,30 @@ def pack_h3_result(
         raise MMH3ResourceError("Process operation must be a non-empty string")
     process_info = deep_copy_json(dict(process_info or {}))
     h3_extensions = packet.manifest.get("extensions", {}).get("minimax_h3", {})
-    for key in ("av_edit_policy", "av_bridge", "compiled_references"):
+    preservation = h3_extensions.get("audio_preservation", {})
+    if audio is not None and preservation.get("enabled"):
+        resource = packet.get_primary("audio")
+        current = packet.ref(resource["id"]).materialize() if resource and resource["id"] == preservation.get("output_resource_id") else None
+        same_soundtrack = (isinstance(current, dict) and isinstance(audio, dict)
+                           and audio.get("waveform") is current.get("waveform")
+                           and audio.get("sample_rate") == current.get("sample_rate"))
+        if not same_soundtrack:
+            # A later continuation/edit can generate a different track. Do not
+            # let its next refinement resurrect an earlier protected song.
+            packet = packet.set_extension_value("minimax_h3", "audio_preservation", {"enabled": False})
+            packet = packet.set_extension_value("minimax_h3", "audio_timeline", None)
+            h3_extensions = packet.manifest.get("extensions", {}).get("minimax_h3", {})
+    if h3_extensions.get("audio_timeline") and not h3_extensions.get("audio_preservation", {}).get("enabled"):
+        packet = packet.set_extension_value("minimax_h3", "audio_timeline", None)
+        h3_extensions = packet.manifest.get("extensions", {}).get("minimax_h3", {})
+    clock = h3_extensions.get("audio_timeline") or {}
+    if (clock.get("audio_binding") and h3_extensions.get("audio_preservation", {}).get("output_resource_id")
+            != clock["audio_binding"].get("resource_id")):
+        # A separate edit/refit selected a new delivery resource without moving
+        # the timeline's tracks. Only the continuation author may move that clock.
+        packet = packet.set_extension_value("minimax_h3", "audio_timeline", None)
+        h3_extensions = packet.manifest.get("extensions", {}).get("minimax_h3", {})
+    for key in ("av_edit_policy", "av_bridge", "compiled_references", "audio_preservation", "audio_timeline"):
         if key in h3_extensions:
             process_info.setdefault(key, deep_copy_json(h3_extensions[key]))
     if not is_jsonable(process_info):
@@ -167,7 +195,9 @@ def pack_h3_result(
     if latent is not None:
         origin = validate_h3_latent_origin(latent_origin)
         latent_info = validate_h3_av_latent(latent)
-        extensions = {"minimax_h3": {"latent": build_h3_latent_contract(latent_info, origin=origin)}}
+        clock = h3_extensions.get("audio_timeline") or {}
+        extensions = {"minimax_h3": {"latent": build_h3_latent_contract(latent_info, origin=origin,
+            absolute_start_frame=clock.get("segment_start_frame", 0))}}
         existing = out.get_primary("latent")
         out, resource_ids["latent"] = out.put_with_id(
             latent, kind="latent", role="auxiliary", mode="replace" if existing else "add",
@@ -227,6 +257,11 @@ def pack_h3_result(
         process_info["applied_loras"] = deep_copy_json(normalized_applied_loras)
     if bound_control is not None:
         out = out.set_extension_value("mmh3_media", "control", bound_control.to_dict())
+    from .audio_timeline import bind_audio_timeline, timeline_from_packet
+    out = bind_audio_timeline(out, resource_ids, latent_info.frames if latent is not None else None)
+    clock = timeline_from_packet(out)
+    if clock is not None:
+        process_info["audio_timeline"] = clock
     process_record = {
         "version": PROCESS_RESULT_VERSION,
         "operation": operation,

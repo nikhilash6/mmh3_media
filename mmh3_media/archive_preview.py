@@ -37,6 +37,16 @@ def _source_thumbnail(path: str, mtime_ns: int, size: int, resource_id: str) -> 
 
 def _gallery(packet):
     from .preview import resource_summary
+    from .resolution import resolve_reference_set
+
+    reference_error = None
+    try:
+        references = resolve_reference_set(packet, preset="all")
+        tags = {item.resource.resource_id: item.prompt_tag for item in references.presentation}
+    except MMH3ResourceError as exc:
+        # A generic archive can contain references without an H3 contract.
+        tags = {}
+        reference_error = str(exc)
 
     primary = set(packet.primary_bindings.values())
     resources = sorted(packet.resources(), key=lambda r: (
@@ -62,8 +72,18 @@ def _gallery(packet):
                       if record.get("media_type") in RASTER_MEDIA_TYPES and representation_is_fresh(packet, record)]
         preferred = "poster" if resource["kind"] == "video" else "thumbnail"
         record = next((r for r in reversed(candidates) if r["kind"] == preferred), candidates[-1] if candidates else None)
+        if rid in tags:
+            prompt_status = "Active reference"
+        elif resource.get("role") == "reference":
+            prompt_status = "Prompt tags unavailable: " + reference_error if reference_error else "Inactive reference"
+        elif resource.get("role") == "context":
+            prompt_status = "Context (no prompt tag)"
+        else:
+            prompt_status = "Result / auxiliary (no prompt tag)"
         items.append({
             "resource_id": rid, "kind": resource["kind"], "role": resource.get("role"),
+            "prompt_tag": tags.get(rid),
+            "prompt_status": prompt_status,
             "name": resource.get("name") or label or resource["kind"].upper(),
             "summary": resource_summary(packet, rid), "primary": rid in primary,
             "representation_id": record["id"] if record else None,

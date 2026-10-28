@@ -51,7 +51,7 @@
         }
       ],
       "widgets_values": [
-        "__runtime_asset_catalog__",
+        "(none)",
         "on_access",
         ""
       ]
@@ -176,6 +176,30 @@
           "name": "mask",
           "type": "MASK",
           "link": null
+        },
+        {
+          "name": "preserve_audio",
+          "type": "BOOLEAN",
+          "link": null,
+          "widget": {
+            "name": "preserve_audio"
+          }
+        },
+        {
+          "name": "audio_fit",
+          "type": "COMBO",
+          "link": null,
+          "widget": {
+            "name": "audio_fit"
+          }
+        },
+        {
+          "name": "audio_source",
+          "type": "STRING",
+          "link": null,
+          "widget": {
+            "name": "audio_source"
+          }
         }
       ],
       "outputs": [
@@ -206,7 +230,10 @@
         "source_pcm",
         640,
         384,
-        64
+        64,
+        true,
+        "cut",
+        "auto"
       ]
     },
     {

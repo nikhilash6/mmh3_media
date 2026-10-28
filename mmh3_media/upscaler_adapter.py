@@ -18,7 +18,7 @@ def _input_names(backend) -> set[str]:
 
 
 def resolve_upscaler_api(backend) -> str:
-    """Require the maintained Plus 3D-upscaler schema."""
+    """Recognize the Plus and original LBH 3D-upscaler contracts."""
     names = _input_names(backend)
     common = {"latent", "model_name", "mode", "align", "device", "precision"}
     if not common.issubset(names):
@@ -28,8 +28,13 @@ def resolve_upscaler_api(backend) -> str:
         )
     if {"keep_proportion", "offload_after_upscale"}.issubset(names):
         return "plus_v1"
+    if {"enable_temporal_chunking", "force_unload"}.issubset(names):
+        return "upstream_v1"
     raise MMH3ResourceError(
-        "Unsupported MinimaxH3LatentUpscaler3D schema. Install the maintained Plus fork."
+        "Unsupported MinimaxH3LatentUpscaler3D schema. Expected Plus "
+        "(keep_proportion, offload_after_upscale) or LBH "
+        "(enable_temporal_chunking, force_unload). Declared inputs: "
+        + ", ".join(sorted(names))
     )
 
 
@@ -62,5 +67,13 @@ def build_upscaler_inputs(
             **common,
             "keep_proportion": True,
             "offload_after_upscale": bool(offload_after_upscale),
+        }
+    if api == "upstream_v1":
+        return {
+            **common,
+            # Process each supplied clip as one temporal window. The original
+            # chunked path pads internal boundaries and changes seam inference.
+            "enable_temporal_chunking": False,
+            "force_unload": bool(offload_after_upscale),
         }
     raise MMH3ResourceError(f"Unknown learned-upscaler API {api!r}")

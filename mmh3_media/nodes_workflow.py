@@ -52,12 +52,19 @@ class MMH3Generate(io.ComfyNode):
                     io.Combo.Input("clip_name", options=folder_paths.get_filename_list("text_encoders")),
                     io.Combo.Input("video_vae_name", options=folder_paths.get_filename_list("vae")),
                     io.Combo.Input("audio_vae_name", options=folder_paths.get_filename_list("vae")),
-                    io.Combo.Input("preset", options=["Standard - 20 steps", "Turbo - 4 steps", "Turbo - 8 steps", "FastH3 V2 - 8 steps"], default="Standard - 20 steps")],
+                    io.Combo.Input("preset", options=["Standard - 20 steps", "Turbo - 4 steps", "Turbo - 8 steps", "FastH3 V2 - 8 steps"], default="Standard - 20 steps"),
+                    io.Boolean.Input("preserve_audio", display_name="Keep source audio", default=False, optional=True,
+                                     tooltip="Protect source sound during generation and restore it at output. No source sound produces silence. FastH3 V2 does not support this mode."),
+                    io.Combo.Input("audio_fit", options=["cut", "stretch"], default="cut", optional=True,
+                                   tooltip="cut: trim excess or pad a short track with silence. stretch: fit the complete track, preserving pitch."),
+                    io.String.Input("audio_source", default="auto", optional=True, advanced=True,
+                                    tooltip="auto: primary audio/video, then active audio references, then video sound. Multiple candidates require a slot such as audio:0 or video:0 (or resource ID)."),
+                    io.Audio.Input("source_audio", optional=True, tooltip="Optional soundtrack override. Takes priority over packet/reference soundtracks.")],
             outputs=[MMH3.Output("packet"), io.Video.Output("video")], enable_expand=True)
 
     @classmethod
     def execute(cls, packet, width, height, frames, fl2va_checkpoint, ref2va_checkpoint, clip_name, video_vae_name, audio_vae_name,
-                preset="Standard - 20 steps"):
+                preset="Standard - 20 steps", preserve_audio=False, audio_fit="cut", audio_source="auto", source_audio=None):
         if width <= 0 or height <= 0 or width % 32 or height % 32 or not 5 <= frames <= 362 or (frames - 5) % 17:
             raise MMH3ResourceError("Generation requires a 32-pixel canvas grid and 5+17k frames (up to 362); use Studio for longer sequences")
         from comfy_execution.graph_utils import GraphBuilder
@@ -67,6 +74,15 @@ class MMH3Generate(io.ComfyNode):
         fast = is_fasth3_v2_checkpoint(fl2va_checkpoint) and packet.manifest.get("generation", {}).get("task", "t2va") != "ref2va"
         if (preset == FASTH3_V2_LABEL) != fast:
             raise MMH3ResourceError("FastH3 V2 checkpoint and FastH3 V2 preset must be selected together")
+        if preserve_audio:
+            if fast:
+                raise MMH3ResourceError("FastH3 V2 supports text-to-audio-video only; select a base H3 checkpoint/preset to keep source audio")
+            from .audio_preservation import prepare_audio_packet
+            from .nodes_editing import require_joint_masks
+            require_joint_masks()
+            packet, report = prepare_audio_packet(packet, frames, fit=audio_fit, source=audio_source, audio=source_audio)
+        else:
+            packet = packet.set_extension_value("minimax_h3", "audio_preservation", {"enabled": False})
         model = graph.node("MMH3H3TaskModel", packet=packet, fl2va_checkpoint=fl2va_checkpoint, ref2va_checkpoint=ref2va_checkpoint)
         clip = graph.node("CLIPLoader", clip_name=clip_name, type="minimax", device="default")
         video_vae = graph.node("VAELoader", vae_name=video_vae_name)
@@ -80,17 +96,46 @@ class MMH3Generate(io.ComfyNode):
         noise = graph.node("RandomNoise", noise_seed=condition.out(2))
         sampler = graph.node("KSamplerSelect", sampler_name=sampling.out(4))
         scheduler = graph.node("MMH3H3Scheduler", model=shifted.out(0), scheduler=sampling.out(5), steps=sampling.out(1), denoise=1.0)
+        target = condition.out(1)
+        if preserve_audio:
+            protected = graph.node("MMH3PreserveAudioTarget", packet=packet, latent=target, audio_vae=audio_vae.out(0))
+            target = protected.out(0)
         result = graph.node("SamplerCustomAdvanced", noise=noise.out(0), guider=guider.out(0), sampler=sampler.out(0),
-                            sigmas=scheduler.out(0), latent_image=condition.out(1))
-        separated = graph.node("MMH3H3AVSeparate", av_latent=result.out(0))
+                            sigmas=scheduler.out(0), latent_image=target)
+        sampled = result.out(0)
+        if preserve_audio:
+            sampled = graph.node("MMH3AVProtectionRestore", protected_source=target, sampled=sampled).out(0)
+        separated = graph.node("MMH3H3AVSeparate", av_latent=sampled)
         decoded = graph.node("MMH3H3VideoDecode", samples=separated.out(0), vae=video_vae.out(0), decode_mode="vae", trt_decoder="auto")
-        audio = graph.node("VAEDecodeAudio", samples=separated.out(1), vae=audio_vae.out(0))
-        video = graph.node("MMH3CreateVideo", images=decoded.out(0), audio=audio.out(0), fps=24.0, bit_depth=8,
+        audio = protected.out(1) if preserve_audio else graph.node("VAEDecodeAudio", samples=separated.out(1), vae=audio_vae.out(0)).out(0)
+        video = graph.node("MMH3CreateVideo", images=decoded.out(0), audio=audio, fps=24.0, bit_depth=8,
                            color_space="sRGB", decode_info_json=decoded.out(1))
-        packed = graph.node("MMH3PackH3Result", packet=condition.out(3), latent=result.out(0), video=video.out(0), audio=audio.out(0),
+        packed = graph.node("MMH3PackH3Result", packet=condition.out(3), latent=sampled, video=video.out(0), audio=audio,
                             operation="generate", mode=condition.out(4), status=condition.out(5), process_info_json=condition.out(6),
                             sampling_profile_json=sampling.out(0), applied_loras_json=sampling.out(7), latent_origin="sampler_output")
-        return io.NodeOutput(packed.out(0), video.out(0), expand=graph.finalize())
+        summary = (f"Source audio protected · {report['source']} · {audio_fit}"
+                   if preserve_audio else "Generated audio")
+        if preserve_audio and report["source"] == "none":
+            summary = "Source audio protected · no source soundtrack · silent output"
+        return io.NodeOutput(packed.out(0), video.out(0), expand=graph.finalize(), ui=ui.PreviewText(summary))
+
+
+class MMH3PreserveAudioTarget(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(node_id="MMH3PreserveAudioTarget", category=CATEGORY + "/Internal",
+            inputs=[MMH3.Input("packet"), io.Latent.Input("latent"), io.Vae.Input("audio_vae")],
+            outputs=[io.Latent.Output("latent"), io.Audio.Output("audio")])
+
+    @classmethod
+    def execute(cls, packet, latent, audio_vae):
+        from .audio_preservation import protect_audio_target
+        value = _packet(packet)
+        resource = value.get_primary("audio")
+        if resource is None:
+            raise MMH3ResourceError("Protected soundtrack is missing; prepare generation again")
+        audio = value.ref(resource["id"]).materialize()
+        return io.NodeOutput(protect_audio_target(latent, audio, audio_vae), audio)
 
 
 class MMH3KeyframePrepare(io.ComfyNode):
@@ -179,22 +224,41 @@ class MMH3H3Refine(io.ComfyNode):
                     io.Combo.Input("audio_vae_name", options=folder_paths.get_filename_list("vae")),
                     io.Float.Input("denoise", default=0.25, min=0.01, max=1.0, step=0.01),
                     io.Int.Input("steps", default=0, min=0, max=100, tooltip="0 inherits source steps."),
-                    io.Combo.Input("audio_policy", options=["source_pcm", "decoded_latent"], default="source_pcm"),
+                    io.Combo.Input("audio_policy", options=["source_pcm", "decoded_latent"], default="source_pcm", advanced=True),
                     io.Int.Input("tile_width", default=640, min=32, max=4096, step=32, advanced=True),
                     io.Int.Input("tile_height", default=384, min=32, max=4096, step=32, advanced=True),
-                    io.Int.Input("overlap", default=64, min=0, max=4096, step=32, advanced=True), io.Mask.Input("mask", optional=True)],
+                    io.Int.Input("overlap", default=64, min=0, max=4096, step=32, advanced=True), io.Mask.Input("mask", optional=True),
+                    io.Boolean.Input("preserve_audio", display_name="Keep source audio", default=True, optional=True,
+                                     tooltip="Restore the source soundtrack. With no source soundtrack, output silence. Off uses decoded latent audio."),
+                    io.Combo.Input("audio_fit", options=["cut", "stretch"], default="cut", optional=True),
+                    io.String.Input("audio_source", default="auto", optional=True, advanced=True,
+                                    tooltip="auto, audio:0, video:0, or a resource ID.")],
             outputs=[MMH3.Output("packet"), io.Video.Output("video")], enable_expand=True)
 
     @classmethod
     def execute(cls, packet, method, scale, checkpoint, clip_name, video_vae_name, audio_vae_name, denoise, steps,
-                audio_policy="source_pcm", tile_width=640, tile_height=384, overlap=64, mask=None):
+                audio_policy="source_pcm", tile_width=640, tile_height=384, overlap=64, mask=None,
+                preserve_audio=None, audio_fit="cut", audio_source="auto"):
         from comfy_execution.graph_utils import GraphBuilder
         from .refine_workflow import expand_refinement
         graph = GraphBuilder()
+        packet = _packet(packet)
+        if preserve_audio is not None:
+            audio_policy = "source_pcm" if preserve_audio else "decoded_latent"
+            if preserve_audio:
+                from .audio_preservation import prepare_audio_packet
+                from .h3 import validate_h3_av_latent
+                resource = packet.get_primary("latent")
+                if resource is None:
+                    raise MMH3ResourceError("Refinement requires a primary H3 AV latent")
+                frames = validate_h3_av_latent(packet.ref(resource["id"]).materialize()).frames
+                packet, _ = prepare_audio_packet(packet, frames, fit=audio_fit, source=audio_source)
+            else:
+                packet = packet.set_extension_value("minimax_h3", "audio_preservation", {"enabled": False})
         options = dict(method=method, scale=scale, checkpoint=checkpoint, clip_name=clip_name,
                        video_vae_name=video_vae_name, audio_vae_name=audio_vae_name, denoise=denoise,
                        steps=steps, audio_policy=audio_policy, tile_width=tile_width, tile_height=tile_height, overlap=overlap)
-        outputs = expand_refinement(graph, _packet(packet), options, mask)
+        outputs = expand_refinement(graph, packet, options, mask)
         return io.NodeOutput(*outputs, expand=graph.finalize())
 
 

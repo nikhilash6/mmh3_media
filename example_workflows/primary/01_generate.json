@@ -426,6 +426,35 @@
           "widget": {
             "name": "preset"
           }
+        },
+        {
+          "name": "preserve_audio",
+          "type": "BOOLEAN",
+          "link": null,
+          "widget": {
+            "name": "preserve_audio"
+          }
+        },
+        {
+          "name": "audio_fit",
+          "type": "COMBO",
+          "link": null,
+          "widget": {
+            "name": "audio_fit"
+          }
+        },
+        {
+          "name": "audio_source",
+          "type": "STRING",
+          "link": null,
+          "widget": {
+            "name": "audio_source"
+          }
+        },
+        {
+          "name": "source_audio",
+          "type": "AUDIO",
+          "link": null
         }
       ],
       "outputs": [
@@ -453,7 +482,10 @@
         "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
         "minimax_h3_video_vae_int8_convrot.safetensors",
         "minimax_h3_audio_vae_fp32.safetensors",
-        "Standard - 20 steps"
+        "Standard - 20 steps",
+        false,
+        "cut",
+        "auto"
       ]
     },
     {

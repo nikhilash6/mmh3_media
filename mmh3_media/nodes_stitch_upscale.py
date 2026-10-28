@@ -3,7 +3,7 @@ from __future__ import annotations
 from .nodes_optimization import h3_optimization_inputs
 from .node_support import CATEGORY, MMH3, MMH3ResourceError, _packet, io, ui
 from .stitch_upscale import (DEFAULT_UPSCALER, UPSCALER_NODE, UPSCALE_ASPECTS,
-    build_stitch_upscale_expansion, restore_upscale_av, resolve_stitch_upscale_geometry)
+    build_stitch_upscale_expansion, restore_upscale_av, resolve_stitch_upscale_geometry, assemble_upscale_source_audio)
 from .upscaler_adapter import resolve_upscaler_api
 from .video_output import trt_decoder_options
 
@@ -17,7 +17,8 @@ class MMH3H3StitchUpscale(io.ComfyNode):
             description='Upscale an ordered continuation chain, preserve exact AV seams, then decode once. Add more segment inputs; no duplicated generation blocks.',
             inputs=[
                 io.Autogrow.Input('segments', template=io.Autogrow.TemplateNames(
-                    MMH3.Input('segment'), names=[f'segment_{i}' for i in range(1, 67)], min=2)),
+                    MMH3.Input('segment'), names=[f'segment_{i}' for i in range(1, 67)], min=2),
+                    display_name='Continuation Segments'),
                 io.Clip.Input('clip'), io.Vae.Input('video_vae'), io.Vae.Input('audio_vae'),
                 io.DynamicCombo.Input('resolution', options=[
                     io.DynamicCombo.Option('Scale', [
@@ -50,6 +51,8 @@ class MMH3H3StitchUpscale(io.ComfyNode):
                 io.String.Input("turbo_loras_json", display_name="LoRAs", default="", optional=True, force_input=True),
                 io.Combo.Input('streaming', options=['off', 'auto', 'stream'], default='auto', optional=True,
                                tooltip='Auto streams TRT/TAEH3 delivery over 15 seconds. Off uses ordinary full decode.'),
+                io.Boolean.Input('keep_source_audio', default=True, optional=True, display_name='Keep source audio',
+                                 tooltip='Use each original packet’s PCM at its recorded timeline window, trimming context once. Refinement always freezes the matching source audio latent. Latent-only archives fall back to Audio VAE decoding.'),
             ],
             outputs=[MMH3.Output('packet'), io.Video.Output('video'), io.Latent.Output('latent'),
                      io.String.Output('assembly_report_json')], enable_expand=True,
@@ -58,7 +61,7 @@ class MMH3H3StitchUpscale(io.ComfyNode):
     @classmethod
     def execute(cls, segments, clip, video_vae, audio_vae, resolution, denoise, upscaler_model,
                 fl2va_model=None, ref2va_model=None, steps_override=0, manual_sigmas='',
-                attention='Default', fp16_accumulation='Default', force_unload=True, decode_mode='vae', trt_decoder='auto', sage_attention='disabled', sage_allow_compile=False, turbo_loras_json='', streaming='auto'):
+                attention='Default', fp16_accumulation='Default', force_unload=True, decode_mode='vae', trt_decoder='auto', sage_attention='disabled', sage_allow_compile=False, turbo_loras_json='', streaming='auto', keep_source_audio=True):
         packets = [_packet(segments[key]) for key in sorted(segments, key=lambda key: int(key.rsplit('_', 1)[1]))
                    if segments[key] is not None]
         import nodes
@@ -74,7 +77,7 @@ class MMH3H3StitchUpscale(io.ComfyNode):
             steps_override=steps_override, manual_sigmas=manual_sigmas,
             attention=attention, fp16_accumulation=fp16_accumulation, force_unload=force_unload,
             sage_attention=sage_attention, sage_allow_compile=sage_allow_compile, turbo_loras_json=turbo_loras_json,
-            upscaler_api=upscaler_api, decode_mode=decode_mode, trt_decoder=trt_decoder, streaming=streaming)
+            upscaler_api=upscaler_api, decode_mode=decode_mode, trt_decoder=trt_decoder, streaming=streaming, keep_source_audio=keep_source_audio)
         summary = f'{plan.source_width}×{plan.source_height} → {summary}'
         if plan.warnings:
             summary += '\n' + '\n'.join(plan.warnings)
@@ -91,3 +94,21 @@ class MMH3H3UpscaleAVRestore(io.ComfyNode):
     @classmethod
     def execute(cls, sampled, target):
         return io.NodeOutput(restore_upscale_av(sampled, target))
+
+
+class MMH3H3StitchUpscaleAudio(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(node_id='MMH3H3StitchUpscaleAudio', category=CATEGORY + '/Internal',
+            inputs=[io.Autogrow.Input('segments', template=io.Autogrow.TemplateNames(MMH3.Input('segment'),
+                        names=[f'segment_{i}' for i in range(1, 67)], min=2)),
+                    io.Latent.Input('samples'), io.String.Input('assembly_report_json', force_input=True)],
+            outputs=[io.Audio.Output('audio'), io.String.Output('assembly_report_json')])
+
+    @classmethod
+    def execute(cls, segments, samples, assembly_report_json):
+        import json
+        packets = [_packet(segments[key]) for key in sorted(segments, key=lambda key: int(key.rsplit('_', 1)[1]))
+                   if segments[key] is not None]
+        audio, report = assemble_upscale_source_audio(packets, samples, json.loads(assembly_report_json))
+        return io.NodeOutput(audio, json.dumps(report, ensure_ascii=False))

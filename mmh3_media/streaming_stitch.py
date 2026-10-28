@@ -30,6 +30,7 @@ class StreamingSegment:
     packet_id: str
     video_resource_id: str
     audio_resource_id: str
+    start_frame: int = 0
 
 
 @dataclass(frozen=True)
@@ -542,6 +543,7 @@ def build_streaming_stitch(
         dimensions,
         audio,
         plan,
+        source_starts=tuple(segment.start_frame for segment in segments),
     )
     return StreamingStitchResult(video, audio, plan)
 
@@ -556,12 +558,14 @@ class StreamingStitchedVideo:
         dimensions: tuple[int, int],
         audio: dict[str, Any] | None,
         plan: StitchPlan,
+        source_starts: tuple[int, ...] | None = None,
     ):
         self.sources = sources
         self.frame_counts = frame_counts
         self.dimensions = (int(dimensions[0]), int(dimensions[1]))
         self.audio = audio
         self.plan = plan
+        self.source_starts = source_starts or tuple(0 for _ in sources)
         self.last_save_stats: dict[str, int] = {}
 
     def get_dimensions(self) -> tuple[int, int]:
@@ -601,9 +605,14 @@ class StreamingStitchedVideo:
                 yield frame.to_ndarray(format="rgb24")
 
     def _iter_frames(self, stats: dict[str, int]) -> Iterator[np.ndarray]:
+        from itertools import islice
+        def frames(index):
+            stream = self._source_frames(self.sources[index])
+            start = self.source_starts[index]
+            return islice(stream, start, start + self.frame_counts[index]) if start else stream
         if len(self.sources) == 1:
             count = 0
-            for frame in self._source_frames(self.sources[0]):
+            for frame in frames(0):
                 count += 1
                 yield frame
             if count != int(self.frame_counts[0]):
@@ -612,7 +621,7 @@ class StreamingStitchedVideo:
                 )
             return
         yield from iter_stitched_rgb_frames(
-            [self._source_frames(source) for source in self.sources],
+            [frames(i) for i in range(len(self.sources))],
             self.frame_counts,
             video_mode=self.plan.video_mode,
             overlap_frames=self.plan.overlap_frames,
